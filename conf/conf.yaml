@@ -1,0 +1,9 @@
+serverPort: ":1402"
+queueRedis: 
+    urls: ""
+    password: ""
+    db:
+cacheRedis: 
+    urls: ""
+    password: ""
+    db: 
