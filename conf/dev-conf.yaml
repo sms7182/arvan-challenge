@@ -1,9 +1,9 @@
 serverPort: ":1402"
 queueRedis: 
-    urls: ""
+    urls: "localhost:6379"
     password: ""
-    db:
+    db: 0
 cacheRedis: 
-    urls: ""
+    urls: "localhost:7379"
     password: ""
-    db: 
+    db: 0

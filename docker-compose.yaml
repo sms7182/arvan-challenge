@@ -1,0 +1,42 @@
+version: '3.4'
+
+
+networks:
+  app-tier:
+    driver: bridge
+
+services:
+   
+  challenge:
+    image: challenge
+    container_name: challenge
+    
+    extra_hosts: 
+      - "host.docker.internal:172.17.0.1"
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    ports:
+      - 1402:1402
+    networks:
+      - app-tier
+
+  cache:
+    image: 'bitnami/redis:latest'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      - app-tier
+    extra_hosts: 
+      - "host.docker.internal:172.17.0.1"
+
+  queue:
+    image: 'bitnami/redis:latest'
+    ports:
+      - 7379:7379
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      - app-tier
+    extra_hosts: 
+      - "host.docker.internal:172.17.0.1"

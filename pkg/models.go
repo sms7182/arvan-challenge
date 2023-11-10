@@ -8,7 +8,18 @@ type DataProcessorDto struct {
 }
 
 type UsageQuta struct {
-	monthQuta     int
-	minuteQuta    int
-	lastUsageTime time.Time
+	MonthQuta     int       `json:"monthQuta"`
+	MinuteQuta    int       `json:"minuteQuta"`
+	LastUsageTime time.Time `json:"lastUsageTime"`
+}
+type UserQuta struct {
+	MonthQuta  int    `json:"monthQuta"`
+	MinuteQuta int    `json:"minuteQuta"`
+	UserId     string `json:"userId"`
+}
+
+type DataProcessorModel struct {
+	Id           string
+	UserId       string
+	ReceivedTime time.Time
 }

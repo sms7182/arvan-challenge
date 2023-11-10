@@ -1,0 +1,21 @@
+{
+    "redisXplorer.config": {
+        "profiles": [
+            {
+                "name": "cach",
+                "host": "localhost",
+                "accessKey": "",
+                "filter": "*",
+                "port": "6379"
+            },
+            {
+                "name": "queue",
+                "host": "localhost",
+                "accessKey": "",
+                "filter": "*",
+                "port": "7379"
+            }
+        ],
+        "scanLimit": 200
+    }
+}
