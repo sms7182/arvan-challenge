@@ -1,9 +1,9 @@
 serverPort: ":1402"
 queueRedis: 
-    urls: "localhost:6379"
+    urls: "challenge_queue_1:7379"
     password: ""
     db: 0
 cacheRedis: 
-    urls: "localhost:7379"
+    urls: "challenge_cache_1:6379"
     password: ""
     db: 0

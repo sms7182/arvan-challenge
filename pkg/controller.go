@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"time"
 
@@ -15,45 +16,101 @@ import (
 )
 
 type Controller struct {
-	CacheService CacheService
-	Queue        *queue.ListQueue
-	Limiter      *DistributedUserLimiter
+	Rdb       *redis.Client
+	Queue     *queue.ListQueue
+	UserQuota map[string]UserQuota
 }
 
 const DataQueue = "DataQueue"
-const UserQutaKey = "UserQuta:%s"
-const UserUsageKey = "UserUsage:%s"
-const BlockMinKey = "BlockMin:%s"
+
+const MonthUserStateKey = "MonthUserStateKey:%s"
+const MinuteUserStateKey = "MinuteUserStateKey:%s"
+const UserQuotaKey = "UserQuotaKey:%s"
 
 func (cr Controller) SetRoutes(e *gin.Engine) {
 	e.POST("/data/processor", rateLimiter(cr), cr.dataProcessor)
 	e.POST("/quta/init", cr.initQuta)
 }
 
+//middleware for check quota : month and minute here check
 func rateLimiter(cr Controller) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
-		var userQuta UserQuta
+		var userRequest DataProcessorDto
 		reqBody, err := ioutil.ReadAll(ctx.Request.Body)
 		if err != nil {
 			ctx.JSON(http.StatusBadRequest, err)
 			return
 		}
 		defer ctx.Request.Body.Close()
-		_ = json.Unmarshal(reqBody, &userQuta)
+		_ = json.Unmarshal(reqBody, &userRequest)
 
-		if cr.Limiter.Allow(ctx, userQuta.UserId) {
-			ctx.Next()
+		userQuota, exist := cr.UserQuota[userRequest.UserId]
+		if !exist {
+			quta, err := cr.Rdb.Get(ctx, fmt.Sprintf(UserQuotaKey, userRequest.UserId)).Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				log.Printf("redis is not nil for get with key")
+				ctx.JSON(http.StatusBadGateway, err)
+				return
+			} else if errors.Is(err, redis.Nil) {
+				log.Printf("redis is nil")
+				ctx.JSON(http.StatusNotFound, err)
+				return
+			}
+
+			err = json.Unmarshal([]byte(quta), &userQuota)
+			if err != nil {
+				log.Printf("unmarshal has error")
+				ctx.JSON(http.StatusBadGateway, err)
+				return
+			}
+			cr.UserQuota[userRequest.UserId] = userQuota
+		}
+
+		stateKey := fmt.Sprintf(MinuteUserStateKey, userRequest.UserId)
+		countCounterOfMinutes, err := cr.Rdb.Incr(ctx, stateKey).Result()
+
+		if err != nil && err == redis.Nil {
+			log.Printf("incr of redis has error")
+			ctx.AbortWithError(http.StatusBadGateway, err)
+
 		} else {
-			ctx.AbortWithStatus(http.StatusTooManyRequests)
+			currentTime := time.Now()
+			if countCounterOfMinutes > int64(userQuota.MinuteQuta) {
+
+				nextMinute := currentTime.Add(time.Minute)
+
+				cr.Rdb.Expire(ctx, stateKey, time.Duration(nextMinute.Sub(currentTime).Seconds()))
+
+				ctx.AbortWithStatus(http.StatusTooManyRequests)
+			} else {
+				stateKey = fmt.Sprintf(MonthUserStateKey, userQuota.UserId)
+				countCounterOfMonth, err := cr.Rdb.Incr(ctx, stateKey).Result()
+				if err != nil && err == redis.Nil {
+
+					ctx.AbortWithError(http.StatusBadGateway, err)
+				} else {
+					if countCounterOfMonth > int64(userQuota.MonthQuta) {
+
+						cr.Rdb.Expire(ctx, stateKey, remainMonthTime(currentTime))
+						ctx.AbortWithStatus(http.StatusTooManyRequests)
+					} else {
+						ctx.Next()
+
+					}
+
+				}
+
+			}
 		}
 
 	}
 }
 
+//initalize for quota
 func (cr Controller) initQuta(c *gin.Context) {
+
 	currentTime := time.Now().UTC()
-	ctx := context.Background()
-	var userQuta UserQuta
+	var userQuta UserQuota
 	reqBody, err := ioutil.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, err)
@@ -65,19 +122,19 @@ func (cr Controller) initQuta(c *gin.Context) {
 		c.JSON(http.StatusNotAcceptable, userQuta)
 		return
 	}
-	ujson, err := json.Marshal(userQuta)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, "internal error for quta")
-		return
-	}
-	err = cr.CacheService.Set(ctx, fmt.Sprintf(UserQutaKey, userQuta.UserId), string(ujson), remainMonthTime(currentTime))
-	if err != nil {
+	setR, err := cr.Rdb.Set(c, fmt.Sprintf(UserQuotaKey, userQuta.UserId), reqBody, remainMonthTime(currentTime)).Result()
+	cr.UserQuota[userQuta.UserId] = userQuta
+	if err != nil && !errors.Is(err, redis.Nil) {
+		fmt.Printf("redis hs error")
 		c.JSON(http.StatusBadGateway, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, userQuta)
+
+	c.JSON(http.StatusOK, setR)
 
 }
+
+// main request api
 func (cr Controller) process(c *gin.Context) {
 	currentTime := time.Now().UTC()
 	var dataRequest DataProcessorDto
@@ -90,86 +147,11 @@ func (cr Controller) process(c *gin.Context) {
 	defer c.Request.Body.Close()
 	_ = json.Unmarshal(reqBody, &dataRequest)
 
-	cr.CacheService.Get(ctx, fmt.Sprintf(BlockMinKey, dataRequest.UserId))
-	existKey := dataRequest.Id + ":" + dataRequest.UserId
-	res, err := cr.CacheService.Get(ctx, existKey)
-
-	if err == nil {
-		c.JSON(http.StatusSeeOther, fmt.Sprintf("duplicate data for id:%s", res))
-		return
-	}
-	if !errors.Is(err, redis.Nil) {
-
-		c.JSON(http.StatusSeeOther, fmt.Sprintf("some error in redis:%s", err))
-		return
-	}
-
-	quta, err := cr.CacheService.Get(ctx, fmt.Sprintf(UserQutaKey, dataRequest.UserId))
-	if err != nil && !errors.Is(err, redis.Nil) {
-		c.JSON(http.StatusBadGateway, "internal error for quta")
-		return
-
-	} else if errors.Is(err, redis.Nil) {
-		c.JSON(http.StatusNotFound, fmt.Sprintf("user with %s not found", dataRequest.UserId))
-		return
-	} else {
-
-		var validQuta UserQuta
-		err = json.Unmarshal([]byte(quta), &validQuta)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, err)
-			return
-		}
-		usageQuta, err := cr.CacheService.Get(ctx, fmt.Sprintf(UserUsageKey, dataRequest.UserId))
-		if err != nil {
-			c.JSON(http.StatusBadGateway, err)
-			return
-		}
-		var userUsageQuta UsageQuta
-		err = json.Unmarshal([]byte(usageQuta), &userUsageQuta)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, err)
-			return
-
-		}
-		//	var differ = currentTime.Sub(userUsageQuta.LastUsageTime)
-
-		// if differ.Minutes() == 0 {
-		// 	if validQuta.MinuteQuta < userUsageQuta.MinuteQuta {
-		// 		dif := time.Duration(60 - currentTime.Second())
-		// 		cr.CacheService.Set(ctx, fmt.Sprintf(BlockMinKey, dataRequest.UserId), dataRequest.UserId, time.Second*dif)
-		// 		c.JSON(http.StatusPaymentRequired, "Quta consumed")
-		// 		return
-		// 	} else {
-		// 		userUsageQuta.MinuteQuta += 1
-		// 	}
-
-		// } else {
-		// 	userUsageQuta.MinuteQuta = 1
-		// }
-
-		// if validQuta.MonthQuta < userUsageQuta.MonthQuta && userUsageQuta.LastUsageTime.Add(time.Hour*24).After(currentTime) {
-
-		// }
-
-		// userUsageQuta.LastUsageTime = currentTime
-
-		// userUsageQuta.MonthQuta += 1
-		// js, err := json.Marshal(userUsageQuta)
-		// if err != nil {
-		// 	c.JSON(http.StatusBadGateway, err)
-		// 	return
-		// }
-		// //zero
-		// cr.CacheService.Set(ctx, fmt.Sprintf(UserUsageKey, dataRequest.UserId), string(js), remainMonthTime(currentTime))
-
-	}
 	cr.Queue.Enqueue(ctx, DataQueue, DataProcessorModel{
 		Id:           dataRequest.Id,
 		UserId:       dataRequest.UserId,
 		ReceivedTime: currentTime,
 	})
-	cr.CacheService.Set(ctx, existKey, dataRequest.Id, time.Hour*24)
 
 }
 func (cr Controller) dataProcessor(c *gin.Context) {
@@ -186,5 +168,4 @@ func remainMonthTime(current time.Time) (remain time.Duration) {
 	currentDate := time.Now().UTC()
 	differ := lastOfMonth.Sub(currentDate)
 	return differ
-
 }

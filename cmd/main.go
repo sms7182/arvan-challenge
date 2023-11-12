@@ -9,31 +9,23 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/spf13/viper"
 	"github.com/ypopivniak/queue"
-	"golang.org/x/time/rate"
 )
 
 func main() {
 	setUpViper()
-	//redisClient := getRedisClient()
-
-	limiter, err := pkg.NewDistributedUserLimiter("localhost:6379")
-	if err != nil {
-		log.Fatal("Failed to create limiter:", err)
-	}
+	redisClient := getRedisClient()
 
 	client := redis.NewClient(&redis.Options{
 		Addr: viper.GetString("queueRedis.urls"),
+		DB:   0,
 	})
-	limiter.SetUserPolicy("1", rate.Limit(2))
+
 	que := queue.NewListQueue(client, &queue.Options{})
 
-	cacheService := pkg.CacheService{
-		//Rdb: redisClient,
-	}
 	controller := pkg.Controller{
-		CacheService: cacheService,
-		Queue:        que,
-		Limiter:      limiter,
+		Rdb:       redisClient,
+		Queue:     que,
+		UserQuota: make(map[string]pkg.UserQuota),
 	}
 
 	router := gin.New()

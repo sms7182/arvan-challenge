@@ -7,12 +7,7 @@ type DataProcessorDto struct {
 	UserId string `json:"userId"`
 }
 
-type UsageQuta struct {
-	MonthQuta     int       `json:"monthQuta"`
-	MinuteQuta    int       `json:"minuteQuta"`
-	LastUsageTime time.Time `json:"lastUsageTime"`
-}
-type UserQuta struct {
+type UserQuota struct {
 	MonthQuta  int    `json:"monthQuta"`
 	MinuteQuta int    `json:"minuteQuta"`
 	UserId     string `json:"userId"`

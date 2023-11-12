@@ -22,7 +22,7 @@ services:
       - app-tier
 
   cache:
-    image: 'bitnami/redis:latest'
+    image: 'redis:latest'
     environment:
       - ALLOW_EMPTY_PASSWORD=yes
     networks:
@@ -33,7 +33,7 @@ services:
       - "host.docker.internal:172.17.0.1"
 
   queue:
-    image: 'bitnami/redis:latest'
+    image: 'redis:latest'
     ports:
       - 7379:7379
     environment:
