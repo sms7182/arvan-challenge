@@ -21,13 +21,6 @@ type Controller struct {
 	UserQuota map[string]UserQuota
 }
 
-const DataQueue = "DataQueue"
-
-const MonthUserStateKey = "MonthUserStateKey:%s"
-const MinuteUserStateKey = "MinuteUserStateKey:%s"
-const UserQuotaKey = "UserQuotaKey:%s"
-const DuplicateKey = "Id:%s"
-
 func (cr Controller) SetRoutes(e *gin.Engine) {
 	e.POST("/data/processor", rateLimiter(cr), cr.dataProcessor)
 	e.POST("/quta/init", cr.initQuta)
@@ -45,8 +38,16 @@ func rateLimiter(cr Controller) gin.HandlerFunc {
 		}
 		defer ctx.Request.Body.Close()
 		_ = json.Unmarshal(reqBody, &userRequest)
-		dKey := fmt.Sprintf(DuplicateKey, userRequest.Id)
-		duplicateCnt, err := cr.Rdb.Incr(ctx, dKey).Result()
+
+		lockKey := fmt.Sprintf(LockKey, userRequest.UserId)
+		lock, err := cr.Rdb.Get(ctx, lockKey).Result()
+		if err == nil {
+			ctx.JSON(http.StatusLocked, lock)
+			return
+		}
+
+		duplicateKey := fmt.Sprintf(DuplicateKey, userRequest.Id)
+		duplicateCnt, err := cr.Rdb.Incr(ctx, duplicateKey).Result()
 		if err != nil {
 			ctx.JSON(http.StatusBadGateway, err)
 			return
@@ -55,7 +56,7 @@ func rateLimiter(cr Controller) gin.HandlerFunc {
 			ctx.JSON(http.StatusSeeOther, duplicateCnt)
 			return
 		}
-		go cr.Rdb.Expire(ctx, dKey, time.Hour*24*7)
+		go cr.Rdb.Expire(ctx, duplicateKey, time.Hour*24*7)
 		userQuota, exist := cr.UserQuota[userRequest.UserId]
 		if !exist {
 			quta, err := cr.Rdb.Get(ctx, fmt.Sprintf(UserQuotaKey, userRequest.UserId)).Result()
@@ -103,8 +104,10 @@ func rateLimiter(cr Controller) gin.HandlerFunc {
 				} else {
 					if countCounterOfMonth > int64(userQuota.MonthQuta) {
 
-						cr.Rdb.Expire(ctx, stateKey, remainMonthTime(currentTime))
+						go cr.Rdb.Expire(ctx, stateKey, remainMonthTime(currentTime))
+						go cr.Rdb.Set(ctx, lockKey, userQuota.UserId, remainMonthTime(currentTime))
 						ctx.AbortWithStatus(http.StatusTooManyRequests)
+
 					} else {
 						ctx.Next()
 
