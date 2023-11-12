@@ -26,6 +26,7 @@ const DataQueue = "DataQueue"
 const MonthUserStateKey = "MonthUserStateKey:%s"
 const MinuteUserStateKey = "MinuteUserStateKey:%s"
 const UserQuotaKey = "UserQuotaKey:%s"
+const DuplicateKey = "Id:%s"
 
 func (cr Controller) SetRoutes(e *gin.Engine) {
 	e.POST("/data/processor", rateLimiter(cr), cr.dataProcessor)
@@ -35,6 +36,7 @@ func (cr Controller) SetRoutes(e *gin.Engine) {
 //middleware for check quota : month and minute here check
 func rateLimiter(cr Controller) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
+
 		var userRequest DataProcessorDto
 		reqBody, err := ioutil.ReadAll(ctx.Request.Body)
 		if err != nil {
@@ -43,7 +45,17 @@ func rateLimiter(cr Controller) gin.HandlerFunc {
 		}
 		defer ctx.Request.Body.Close()
 		_ = json.Unmarshal(reqBody, &userRequest)
-
+		dKey := fmt.Sprintf(DuplicateKey, userRequest.Id)
+		duplicateCnt, err := cr.Rdb.Incr(ctx, dKey).Result()
+		if err != nil {
+			ctx.JSON(http.StatusBadGateway, err)
+			return
+		}
+		if duplicateCnt > 1 {
+			ctx.JSON(http.StatusSeeOther, duplicateCnt)
+			return
+		}
+		go cr.Rdb.Expire(ctx, dKey, time.Hour*24*7)
 		userQuota, exist := cr.UserQuota[userRequest.UserId]
 		if !exist {
 			quta, err := cr.Rdb.Get(ctx, fmt.Sprintf(UserQuotaKey, userRequest.UserId)).Result()
